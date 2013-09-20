@@ -137,6 +137,7 @@ struct kgsl_functable {
 		struct kgsl_event *event);
 	void (*drawctxt_sched)(struct kgsl_device *device,
 		struct kgsl_context *context);
+	void (*resume)(struct kgsl_device *device);
 };
 
 /* MH register values */
