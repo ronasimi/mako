@@ -193,9 +193,7 @@ static int __devinit pmic8xxx_pwrkey_probe(struct platform_device *pdev)
 		input_report_key(pwrkey->pwr, KEY_POWER, 1);
 		input_sync(pwrkey->pwr);
 	}
-<<<<<<< HEAD
 
-=======
 #ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
 #ifdef CONFIG_TOUCHSCREEN_SWEEP2WAKE
 	pr_info("[wake_up_display]: set device %s\n", pwr->name);
@@ -204,7 +202,7 @@ static int __devinit pmic8xxx_pwrkey_probe(struct platform_device *pdev)
 	pr_info("[wake_up_display]: set device %s\n", pwr->name);
 #endif
 #endif
->>>>>>> 8767da2... LG Optimus G squash
+
 	err = request_any_context_irq(key_press_irq, pwrkey_press_irq,
 		IRQF_TRIGGER_RISING, "pmic8xxx_pwrkey_press", pwrkey);
 	if (err < 0) {
