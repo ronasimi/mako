@@ -62,8 +62,6 @@ MODULE_LICENSE("GPLv2");
 #define S2W_S2SONLY_DEFAULT	0
 #define S2W_PWRKEY_DUR          60
 
-<<<<<<< HEAD
-=======
 #ifdef CONFIG_MACH_MSM8974_HAMMERHEAD
 /* Hammerhead aka Nexus 5 */
 #define S2W_Y_MAX               1920
@@ -88,7 +86,6 @@ MODULE_LICENSE("GPLv2");
 #define S2W_X_B2                700
 #define S2W_X_FINAL             450
 #else
->>>>>>> 8767da2... LG Optimus G squash
 /* defaults */
 #define DEFAULT_S2W_Y_LIMIT             2350
 #define DEFAULT_S2W_X_MAX               1540
@@ -111,17 +108,14 @@ static DEFINE_MUTEX(pwrkeyworklock);
 static struct workqueue_struct *s2w_input_wq;
 static struct work_struct s2w_input_work;
 
-<<<<<<< HEAD
 static int s2w_start_posn = DEFAULT_S2W_X_B1;
 static int s2w_mid_posn = DEFAULT_S2W_X_B2;
 static int s2w_end_posn = (DEFAULT_S2W_X_MAX - DEFAULT_S2W_X_FINAL);
 static int s2w_threshold = DEFAULT_S2W_X_FINAL;
 //static int s2w_max_posn = DEFAULT_S2W_X_MAX;
-
 static int s2w_swap_coord = 0;
 
-=======
->>>>>>> 8767da2... LG Optimus G squash
+
 /* Read cmdline for s2w */
 static int __init read_s2w_cmdline(char *s2w)
 {
@@ -177,7 +171,6 @@ static void detect_sweep2wake(int sweep_coord, int sweep_height, bool st)
         pr_info(LOGTAG"x,y(%4d,%4d) single:%s\n",
                 x, y, (single_touch) ? "true" : "false");
 #endif
-<<<<<<< HEAD
 	if (s2w_swap_coord == 1) {
 		//swap the coordinate system
 		swap_temp1 = sweep_coord;
@@ -191,12 +184,7 @@ static void detect_sweep2wake(int sweep_coord, int sweep_height, bool st)
 	if ((single_touch) && (scr_suspended == true) && (s2w_switch > 0)) {
 		prev_coord = 0;
 		next_coord = s2w_start_posn;
-=======
-	//left->right
-	if ((single_touch) && (scr_suspended == true) && (s2w_switch > 0 && !s2w_s2sonly)) {
-		prevx = 0;
-		nextx = S2W_X_B1;
->>>>>>> 8767da2... LG Optimus G squash
+
 		if ((barrier[0] == true) ||
 		   ((sweep_coord > prev_coord) &&
 		    (sweep_coord < next_coord))) {
