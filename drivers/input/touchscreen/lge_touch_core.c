@@ -96,6 +96,7 @@ struct lge_touch_attribute {
 	ssize_t (*store)(struct lge_touch_data *ts, const char *buf, size_t count);
 };
 
+
 #define LGE_TOUCH_ATTR(_name, _mode, _show, _store)	\
 struct lge_touch_attribute lge_touch_attr_##_name = __ATTR(_name, _mode, _show, _store)
 
@@ -613,6 +614,9 @@ void* get_touch_handle(struct i2c_client *client)
  */
 int touch_i2c_read(struct i2c_client *client, u8 reg, int len, u8 *buf)
 {
+#define LGETOUCH_I2C_RETRY 10
+	int retry = 0;
+
 	struct i2c_msg msgs[] = {
 		{
 			.addr = client->addr,
@@ -628,12 +632,19 @@ int touch_i2c_read(struct i2c_client *client, u8 reg, int len, u8 *buf)
 		},
 	};
 
-	if (i2c_transfer(client->adapter, msgs, 2) < 0) {
-		if (printk_ratelimit())
-			TOUCH_ERR_MSG("transfer error\n");
-		return -EIO;
-	} else
-		return 0;
+
+	for (retry = 0; retry <= LGETOUCH_I2C_RETRY; retry++) {
+		if (i2c_transfer(client->adapter, msgs, 2) == 2)
+			break;
+		if (retry == LGETOUCH_I2C_RETRY) {
+			if (printk_ratelimit())
+				TOUCH_ERR_MSG("transfer error\n");
+			return -EIO;
+		} else
+			msleep(10);
+	}
+
+	return 0;
 }
 
 int touch_i2c_write(struct i2c_client *client, u8 reg, int len, u8 * buf)
@@ -2153,8 +2164,13 @@ static void touch_work_func_c(struct work_struct *work)
 {
 	struct lge_touch_data *ts =
 			container_of(work, struct lge_touch_data, work);
-	u8 report_enable = 0;
-	int ret = 0;
+	int int_pin = 0;
+	int next_work = 0;
+	int ret;
+
+	atomic_dec(&ts->next_work);
+	ts->ts_data.total_num = 0;
+
 
 	ret = touch_work_pre_proc(ts);
 	if (ret == -EIO)
@@ -2166,10 +2182,23 @@ static void touch_work_func_c(struct work_struct *work)
 		touch_asb_input_report(ts, FINGER_RELEASED);
 		report_enable = 1;
 
-		if (likely(touch_debug_mask & (DEBUG_BASE_INFO | DEBUG_ABS))) {
-			if (ts->ts_data.prev_total_num)
-				check_log_finger_released(ts);
-		}
+	ret = touch_device_func->data(ts->client, ts->ts_data.curr_data,
+		&ts->ts_data.curr_button, &ts->ts_data.total_num);
+	if (ret < 0) {
+		if (ret == -EINVAL) /* Ignore the error */
+			return;
+		goto err_out_critical;
+	}
+
+	if (likely(ts->pdata->role->operation_mode == INTERRUPT_MODE))
+		int_pin = gpio_get_value(ts->pdata->int_pin);
+
+	/* Accuracy Solution */
+	if (likely(ts->pdata->role->accuracy_filter_enable)) {
+		if (accuracy_filter_func(ts) < 0)
+			goto out;
+	}
+
 
 		ts->ts_data.prev_total_num = 0;
 	} else if (ts->ts_data.total_num <= ts->pdata->caps->max_id) {
@@ -2187,15 +2216,23 @@ static void touch_work_func_c(struct work_struct *work)
 	/* Reset finger position data */
 	memset(&ts->ts_data.curr_data, 0x0, sizeof(ts->ts_data.curr_data));
 
-	if (report_enable)
-		input_sync(ts->input_dev);
+	return;
+
+err_out_retry:
+	ts->work_sync_err_cnt++;
+	atomic_inc(&ts->next_work);
+	queue_work(touch_wq, &ts->work);
+
 
 out:
 	touch_work_post_proc(ts, WORK_POST_OUT);
 	return;
 
 err_out_critical:
-	touch_work_post_proc(ts, WORK_POST_ERR_CIRTICAL);
+	ts->work_sync_err_cnt = 0;
+	safety_reset(ts);
+	touch_ic_init(ts);
+
 	return;
 }
 
@@ -2555,6 +2592,7 @@ static ssize_t show_platform_data(struct lge_touch_data *ts, char *buf)
 	ret += sprintf(buf+ret, "\tlcd_x                 = %d\n", pdata->caps->lcd_x);
 	ret += sprintf(buf+ret, "\tlcd_y                 = %d\n", pdata->caps->lcd_y);
 	ret += sprintf(buf+ret, "role:\n");
+
 	ret += sprintf(buf+ret, "\toperation_mode        = %d\n", pdata->role->operation_mode);
 	ret += sprintf(buf+ret, "\tkey_type              = %d\n", pdata->role->key_type);
 	ret += sprintf(buf+ret, "\treport_mode           = %d\n", pdata->role->report_mode);
@@ -3040,6 +3078,7 @@ static ssize_t store_incoming_call(struct lge_touch_data *ts, const char *buf, s
 	return count;
 }
 
+
 /* show_f54
  *
  * Synaptics F54 function
@@ -3306,6 +3345,7 @@ static struct attribute *lge_touch_attribute_list[] = {
 #ifdef CUST_G_TOUCH
 	&lge_touch_attr_show_touches.attr,
 	&lge_touch_attr_pointer_location.attr,
+
 	&lge_touch_attr_incoming_call.attr,
 	&lge_touch_attr_f54.attr,
 	&lge_touch_attr_report_mode.attr,
@@ -3526,7 +3566,7 @@ static int touch_probe(struct i2c_client *client, const struct i2c_device_id *id
 				ts->input_dev->name);
 		goto err_input_register_device_failed;
 	}
-#endif
+
 
 	/* interrupt mode */
 	if (ts->pdata->role->operation_mode) {
@@ -3538,8 +3578,15 @@ static int touch_probe(struct i2c_client *client, const struct i2c_device_id *id
 		gpio_direction_input(ts->pdata->int_pin);
 
 		ret = request_threaded_irq(client->irq, touch_irq_handler,
-				touch_thread_irq_handler,
-				ts->pdata->role->irqflags | IRQF_ONESHOT, client->name, ts);
+
+				NULL,
+#ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+				ts->pdata->role->irqflags | IRQF_ONESHOT | IRQF_TRIGGER_LOW | IRQF_NO_SUSPEND,
+#else
+				ts->pdata->role->irqflags | IRQF_ONESHOT,
+#endif
+				client->name, ts);
+
 
 		if (ret < 0) {
 			TOUCH_ERR_MSG("request_irq failed. use polling mode\n");
@@ -3586,6 +3633,7 @@ static int touch_probe(struct i2c_client *client, const struct i2c_device_id *id
 	/* accuracy solution */
 	if (ts->pdata->role->accuracy_filter_enable){
 		ts->accuracy_filter.ignore_pressure_gap = 5;
+
 		ts->accuracy_filter.delta_max = 30;
 		ts->accuracy_filter.max_pressure = 255;
 		ts->accuracy_filter.time_to_max_pressure = one_sec / 25;
@@ -3639,7 +3687,9 @@ err_input_register_device_failed:
 	if (ts->pdata->role->operation_mode)
 			free_irq(ts->client->irq, ts);
 	input_free_device(ts->input_dev);
+
 #endif
+
 err_input_dev_alloc_failed:
 	touch_power_cntl(ts, POWER_OFF);
 err_power_failed:
@@ -3703,17 +3753,18 @@ static void touch_early_suspend(struct early_suspend *h)
 			container_of(h, struct lge_touch_data, early_suspend);
 #endif
 #ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
+
  #if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
  	bool prevent_sleep = false;
 #endif
 #if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE)
  	prevent_sleep = (s2w_switch > 0) && (s2w_s2sonly == 0);
+
 #endif
 #if defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
 	prevent_sleep = prevent_sleep || (dt2w_switch > 0);
 #endif
 #endif
-
 
 
 	if (unlikely(touch_debug_mask & DEBUG_TRACE))
@@ -3761,6 +3812,7 @@ static void touch_late_resume(struct early_suspend *h)
 
 #ifdef CONFIG_TOUCHSCREEN_PREVENT_SLEEP
 #if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE) || defined(CONFIG_TOUCHSCREEN_DOUBLETAP2WAKE)
+
  	bool prevent_sleep = false;
 #endif
 #if defined(CONFIG_TOUCHSCREEN_SWEEP2WAKE)
@@ -3771,6 +3823,7 @@ static void touch_late_resume(struct early_suspend *h)
 #endif
 #endif
 
+
 	if (unlikely(touch_debug_mask & DEBUG_TRACE))
 		TOUCH_DEBUG_MSG("\n");
 
@@ -3778,6 +3831,7 @@ static void touch_late_resume(struct early_suspend *h)
 		TOUCH_INFO_MSG("late_resume is not executed\n");
 		return;
 	}
+
 
 #ifdef CUST_G_TOUCH
 	if (ts->pdata->role->ghost_detection_enable) {
@@ -3894,3 +3948,4 @@ void touch_driver_unregister(void)
 	if (touch_wq)
 		destroy_workqueue(touch_wq);
 }
+
